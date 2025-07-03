@@ -3,6 +3,7 @@ import tempfile
 import logging
 import json
 from typing import Dict, Any, Optional, Union
+from datetime import datetime
 
 import torch
 import numpy as np
@@ -101,6 +102,9 @@ class AudioTranscriber:
             tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
             output_path = tmp.name
             tmp.close()
+        else:
+            if os.path.isdir(output_path):
+                output_path = os.path.join(output_path, "processed_audio.wav")
 
         sf.write(output_path, audio, sr)
         if debug:
@@ -111,8 +115,8 @@ class AudioTranscriber:
         self,
         audio_path: str,
         preprocess: bool = True,
-        return_segments: bool = False,
         debug: bool = False,
+        output_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Transcribe an audio file.
@@ -120,14 +124,16 @@ class AudioTranscriber:
         Args:
             audio_path: Path to input audio file.
             preprocess: Whether to apply preprocessing.
-            return_segments: If True, includes time-stamped segments.
             debug: If True, enables verbose logging in preprocessing.
 
         Returns:
             Dict with keys: 'text', optionally 'segments', 'language'.
         """
         if preprocess:
-            audio_path = self.preprocess_audio(audio_path, debug=debug)
+            if debug:
+                audio_path = self.preprocess_audio(audio_path, debug=debug, output_path=output_path)
+            else:
+                audio_path = self.preprocess_audio(audio_path, debug=debug)
 
         options = dict(
             language=self.language,
@@ -139,9 +145,6 @@ class AudioTranscriber:
 
         # always include raw text
         output = {"text": result.get("text", "")}
-        if return_segments:
-            output["segments"] = result.get("segments", [])
-            output["language"] = result.get("language", self.language)
         logger.info("Transcription complete.")
         return output
 
@@ -198,7 +201,7 @@ if __name__ == "__main__":
         help="Whisper model size",
     )
     parser.add_argument(
-        "--language", type=str, default="de", help="Language code"
+        "--language", type=str, default="en", help="Language code"
     )
     parser.add_argument(
         "--no-preprocessing",
@@ -206,19 +209,21 @@ if __name__ == "__main__":
         help="Skip audio preprocessing",
     )
     parser.add_argument(
-        "--segments",
-        action="store_true",
-        help="Return time-stamped segments",
-    )
-    parser.add_argument(
         "--debug", action="store_true", help="Enable debug logging"
     )
     parser.add_argument(
         "--output",
         type=str,
+        default="./output",
         help="Output file path (text or JSON if --segments)",
     )
     args = parser.parse_args()
+
+    # Create timestamped directory for output
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    transcript_dir = os.path.join(args.output, f"transcripts_{timestamp}")
+    os.makedirs(transcript_dir, exist_ok=True)
+    logger.info(f"Results will be saved in: {transcript_dir}")
 
     if args.debug:
         logger.setLevel(logging.DEBUG)
@@ -231,19 +236,17 @@ if __name__ == "__main__":
     res = transcriber.transcribe_file(
         args.audio,
         preprocess=not args.no_preprocessing,
-        return_segments=args.segments,
         debug=args.debug,
+        output_path=transcript_dir if args.debug else None,
     )
 
     # Save or print
     if args.output:
-        if args.segments:
-            with open(args.output, "w", encoding="utf-8") as f:
-                json.dump(res, f, ensure_ascii=False, indent=2)
-            logger.info(f"JSON transcript saved to {args.output}")
-        else:
-            with open(args.output, "w", encoding="utf-8") as f:
-                f.write(res["text"])
-            logger.info(f"Transcript saved to {args.output}")
+        # Save transcript
+        output_file = os.path.join(transcript_dir, "audio_transcript.txt")
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write(res["text"])
+        logger.info(f"Transcript saved to {output_file}")
     else:
+        # Still print to console
         print(res["text"])
