@@ -45,13 +45,90 @@ class AudioTranscriber:
     def _apply_highpass(self, audio: np.ndarray, sr: int, cutoff: int = 100) -> np.ndarray:
         sos = signal.butter(10, cutoff, 'hp', fs=sr, output='sos')
         return signal.sosfilt(sos, audio)
+        
+    def _apply_bandpass(self, audio: np.ndarray, sr: int, low_cutoff: int = 300, high_cutoff: int = 3400) -> np.ndarray:
+        """Apply bandpass filter to focus on speech frequencies"""
+        sos = signal.butter(10, [low_cutoff, high_cutoff], 'bp', fs=sr, output='sos')
+        return signal.sosfilt(sos, audio)
+        
+    def _apply_preemphasis(self, audio: np.ndarray, coef: float = 0.97) -> np.ndarray:
+        """Apply pre-emphasis filter to enhance higher frequencies"""
+        return np.append(audio[0], audio[1:] - coef * audio[:-1])
+        
+    def _compress_dynamic_range(self, audio: np.ndarray, threshold: float = -20, ratio: float = 4) -> np.ndarray:
+        """Apply dynamic range compression to make quiet parts louder and loud parts quieter"""
+        # Convert to dB
+        db = 20 * np.log10(np.abs(audio) + 1e-8)
+        
+        # Apply compression
+        mask = db > threshold
+        db[mask] = threshold + (db[mask] - threshold) / ratio
+        
+        # Convert back to amplitude
+        return np.sign(audio) * 10 ** (db / 20)
 
     def _denoise(self, audio: np.ndarray, sr: int) -> np.ndarray:
-        return nr.reduce_noise(y=audio, sr=sr)
+        """Apply noise reduction with advanced parameters"""
+        return nr.reduce_noise(
+            y=audio,
+            sr=sr,
+            stationary=False,  # Non-stationary noise estimation
+            prop_decrease=0.75,
+            n_fft=1024,
+            win_length=512,
+            n_std_thresh_stationary=1.5
+        )
 
     def _normalize(self, audio: np.ndarray) -> np.ndarray:
         peak = np.max(np.abs(audio)) + 1e-8
         return audio / peak
+        
+    def _spectral_subtraction(self, audio: np.ndarray, sr: int, frame_len: int = 512, hop_len: int = 128, alpha: float = 2) -> np.ndarray:
+        """Apply spectral subtraction for further noise reduction"""
+        from scipy import fft
+        
+        # Estimate noise from first 500ms
+        noise_len = min(int(sr * 0.5), len(audio) // 4)  # Use at most 1/4 of audio for noise estimation
+        noise_sample = audio[:noise_len]
+        noise_spec = np.abs(fft.rfft(noise_sample))
+        noise_power = np.mean(noise_spec ** 2)
+        
+        # Process frames
+        result = np.zeros_like(audio)
+        window = np.hanning(frame_len)
+        
+        for i in range(0, len(audio) - frame_len, hop_len):
+            frame = audio[i:i+frame_len] * window
+            spec = fft.rfft(frame)
+            mag = np.abs(spec)
+            phase = np.angle(spec)
+            
+            # Subtract noise
+            mag_sq = mag ** 2
+            power_diff = mag_sq - alpha * noise_power
+            power_diff = np.maximum(power_diff, 0.01 * mag_sq)
+            
+            # Reconstruct
+            mag_new = np.sqrt(power_diff)
+            spec_new = mag_new * np.exp(1j * phase)
+            frame_new = np.real(fft.irfft(spec_new))
+            
+            # Overlap-add
+            result[i:i+frame_len] += frame_new * window
+        
+        # Normalize for overlapping windows
+        # Count how many windows overlap at each point
+        window_count = np.zeros_like(audio)
+        for i in range(0, len(audio) - frame_len, hop_len):
+            window_count[i:i+frame_len] += window
+        
+        # Avoid division by zero
+        window_count = np.maximum(window_count, 1e-8)
+        
+        # Normalize
+        result = result / window_count
+        
+        return result
 
     def preprocess_audio(
         self,
@@ -82,15 +159,35 @@ class AudioTranscriber:
             if debug:
                 logger.debug("Converted stereo to mono.")
 
+        # Apply pre-emphasis
+        audio = self._apply_preemphasis(audio)
+        if debug:
+            logger.debug("Applied pre-emphasis filter.")
+
         # High-pass filter
         audio = self._apply_highpass(audio, sr)
         if debug:
             logger.debug("Applied high-pass filter.")
+            
+        # Bandpass filter focusing on speech frequencies
+        audio = self._apply_bandpass(audio, sr)
+        if debug:
+            logger.debug("Applied bandpass filter (300-3400Hz).")
 
         # Denoise
         audio = self._denoise(audio, sr)
         if debug:
-            logger.debug("Applied noise reduction.")
+            logger.debug("Applied advanced noise reduction.")
+            
+        # Spectral subtraction for additional noise reduction
+        audio = self._spectral_subtraction(audio, sr)
+        if debug:
+            logger.debug("Applied spectral subtraction.")
+            
+        # Dynamic range compression
+        audio = self._compress_dynamic_range(audio)
+        if debug:
+            logger.debug("Applied dynamic range compression.")
 
         # Normalize
         audio = self._normalize(audio)
