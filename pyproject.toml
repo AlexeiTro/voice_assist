@@ -7,9 +7,13 @@ requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.115.14",
     "langchain>=0.3.26",
+    "langchain-ollama>=0.3.3",
     "langchain-openai>=0.3.27",
+    "noisereduce>=3.0.3",
+    "numba>=0.61.2",
     "numpy>=2.2.6",
     "openai>=1.93.0",
+    "openai-whisper>=20250625",
     "scipy>=1.15.3",
     "soundfile>=0.13.1",
     "torch>=2.7.1",
